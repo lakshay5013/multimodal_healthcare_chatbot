@@ -17,27 +17,39 @@ vector_db = VectorDB(chunk_size=300, overlap=75)
 # Load documents from scraped JSON data
 DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "scraped_medical_data.json")
 
-print("🚀 Initializing Rabbit AI with scraped healthcare knowledge...")
+_data_loaded = False
 
-try:
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        scraped_data = json.load(f)
-        
-    documents = [item["content"] for item in scraped_data]
-    doc_names = [item["title"] for item in scraped_data]
+def load_data():
+    """Load and initialize data on first use (deferred startup)"""
+    global _data_loaded
+    if _data_loaded:
+        return
     
-    if documents:
-        vector_db.add_documents(documents, doc_names)
-    else:
-        print("⚠️ No documents found in scraped data. Please run scraper.py first.")
-except FileNotFoundError:
-    print(f"⚠️ Data file not found at {DATA_FILE}. Please run backend/scraper.py first to build the knowledge base.")
-except json.JSONDecodeError:
-    print(f"⚠️ Error decoding {DATA_FILE}. It may be empty or corrupted.")
+    try:
+        print("🚀 Initializing Rabbit AI with scraped healthcare knowledge...")
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            scraped_data = json.load(f)
+            
+        documents = [item["content"] for item in scraped_data]
+        doc_names = [item["title"] for item in scraped_data]
+        
+        if documents:
+            vector_db.add_documents(documents, doc_names)
+            print(f"✅ Loaded {len(documents)} documents into knowledge base")
+        else:
+            print("⚠️ No documents found in scraped data. Please run scraper.py first.")
+    except FileNotFoundError:
+        print(f"⚠️ Data file not found at {DATA_FILE}. Please run backend/scraper.py first to build the knowledge base.")
+    except Exception as e:
+        print(f"⚠️ Error loading data: {str(e)}")
+    finally:
+        _data_loaded = True
 
-# Get and display stats
-stats = vector_db.get_stats()
-print(f"📊 Database stats: {stats['total_chunks']} chunks, embedding dimension: {stats['embedding_dimension']}")
+# Trigger data load on module import (but with error handling)
+try:
+    load_data()
+except Exception as e:
+    print(f"⚠️ Non-critical startup error: {str(e)}")
 
 def generate_hypothetical_document(query: str, client: Groq) -> str:
     """

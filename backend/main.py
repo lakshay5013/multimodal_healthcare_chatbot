@@ -2,7 +2,7 @@ import os
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from backend.rag import generate_answer, vector_db
+from backend.rag import generate_answer, vector_db, load_data
 from backend.risk_analyzer import analyze_risk
 from backend.report_analyzer import analyze_report
 
@@ -35,6 +35,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+def startup_event():
+    """Ensure data is loaded when app starts"""
+    try:
+        load_data()
+    except Exception as e:
+        print(f"⚠️ Data loading error during startup (non-critical): {str(e)}")
 
 @app.get("/")
 def root():
