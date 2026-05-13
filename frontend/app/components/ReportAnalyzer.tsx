@@ -24,6 +24,7 @@ const STATUS_COLORS = {
 }
 
 export default function ReportAnalyzer() {
+    const backendBaseUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8001"
     const [isDragging, setIsDragging] = useState(false)
     const [isAnalyzing, setIsAnalyzing] = useState(false)
     const [scanProgress, setScanProgress] = useState(0)
@@ -59,7 +60,7 @@ export default function ReportAnalyzer() {
             const formData = new FormData()
             formData.append("file", file)
 
-            const res = await fetch("http://127.0.0.1:8000/analyze-report", {
+            const res = await fetch(`${backendBaseUrl}/analyze-report`, {
                 method: "POST",
                 body: formData,
             })
@@ -78,7 +79,7 @@ export default function ReportAnalyzer() {
         } catch {
             clearInterval(progressInterval)
             setIsAnalyzing(false)
-            setError("Failed to connect to backend. Make sure the server is running on port 8000.")
+            setError("Failed to connect to backend. Make sure the server is running on port 8001.")
         }
     }
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 
 export default function StatsPage() {
+    const backendBaseUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8001";
     const [stats, setStats] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -10,7 +11,7 @@ export default function StatsPage() {
     useEffect(() => {
         const fetchStats = async () => {
             try {
-                const response = await fetch("http://localhost:8000/stats");
+                const response = await fetch(`${backendBaseUrl}/stats`);
                 if (!response.ok) {
                     throw new Error("Failed to fetch stats from backend");
                 }

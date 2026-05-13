@@ -38,6 +38,7 @@ const quickPrompts = [
 ]
 
 export default function AIChatPanel() {
+    const backendBaseUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8001"
     const [message, setMessage] = useState("")
     const [chat, setChat] = useState<ChatMessage[]>([])
     const [loading, setLoading] = useState(false)
@@ -124,16 +125,16 @@ export default function AIChatPanel() {
         setChat(prev => [...prev, userMessage])
 
         try {
-            const res = await fetch(`http://127.0.0.1:8000/chat?query=${encodeURIComponent(text)}`)
+            const res = await fetch(`${backendBaseUrl}/chat?query=${encodeURIComponent(text)}`)
             if (!res.ok) throw new Error("Failed to get response")
             const data = await res.json()
             setLoading(false)
             animateTyping(data.response, data.risk_level, data.suggested_action)
         } catch {
-            setError("Failed to connect to backend. Make sure the Python server is running on port 8000.")
+            setError("Failed to connect to backend. Make sure the Python server is running on port 8001.")
             const errorMessage: ChatMessage = {
                 role: "bot",
-                content: "⚠️ Connection failed. Please ensure the backend server is running on port 8000.",
+                content: "⚠️ Connection failed. Please ensure the backend server is running on port 8001.",
                 timestamp: new Date(),
             }
             setChat(prev => [...prev, errorMessage])
