@@ -213,3 +213,5 @@ If you find this project helpful, please give it a star!
 **Made with ❤️ for healthcare AI**
 
 # healthcare-chatbot-latest
+
+## python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001

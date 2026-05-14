@@ -1,7 +1,5 @@
-from sentence_transformers import SentenceTransformer
-import faiss
 import numpy as np
-import json
+import threading
 
 class VectorDB:
     def __init__(self, chunk_size=500, overlap=100):
@@ -12,13 +10,47 @@ class VectorDB:
             chunk_size: Number of characters per chunk
             overlap: Number of overlapping characters between chunks
         """
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.index = faiss.IndexFlatL2(384)
+        self._model = None
+        self._index = None
+        self._lock = threading.Lock()
         self.chunks = []  # Stores all text chunks
         self.chunk_metadata = []  # Stores metadata about chunks (source, index, etc)
         self.chunk_size = chunk_size
         self.overlap = overlap
-        self.embeddings = np.array([], dtype=np.float32).reshape(0, 384)
+
+    def _ensure_backend(self):
+        """Load SentenceTransformer and FAISS lazily on first use."""
+        if self._model is not None and self._index is not None:
+            return
+
+        with self._lock:
+            if self._model is None:
+                from sentence_transformers import SentenceTransformer
+
+                self._model = SentenceTransformer("all-MiniLM-L6-v2")
+
+            if self._index is None:
+                import faiss
+
+                self._index = faiss.IndexFlatL2(384)
+
+    @property
+    def model(self):
+        self._ensure_backend()
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
+
+    @property
+    def index(self):
+        self._ensure_backend()
+        return self._index
+
+    @index.setter
+    def index(self, value):
+        self._index = value
 
     def chunk_document(self, text, document_name=""):
         """
@@ -62,6 +94,8 @@ class VectorDB:
         """
         if doc_names is None:
             doc_names = [f"doc_{i}" for i in range(len(docs))]
+
+        self._ensure_backend()
         
         all_chunks = []
         
@@ -81,7 +115,6 @@ class VectorDB:
         # Add to FAISS index
         if len(embeddings) > 0:
             self.index.add(embeddings)
-            self.embeddings = np.vstack([self.embeddings, embeddings])
             self.chunks.extend(all_chunks)
             self.chunk_metadata.extend(all_chunks)
             print(f"✅ Added {len(all_chunks)} chunks to vector database")
@@ -99,6 +132,8 @@ class VectorDB:
         """
         if len(self.chunks) == 0:
             return "No medical knowledge available. Please consult a healthcare professional."
+
+        self._ensure_backend()
         
         # Encode the query
         query_embedding = self.model.encode([query])
@@ -127,7 +162,7 @@ class VectorDB:
         return {
             "total_chunks": len(self.chunks),
             "embedding_dimension": 384,
-            "index_size": len(self.embeddings),
+            "index_size": self._index.ntotal if self._index is not None else 0,
             "chunk_size": self.chunk_size,
             "overlap": self.overlap
         }

@@ -1,55 +1,120 @@
 import os
 import json
+import threading
+
 from dotenv import load_dotenv
 from groq import Groq
 import groq
+
 from backend.vector_store import VectorDB
 from backend.hospital_mcp import find_hospitals
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize Vector Database with chunking parameters
-# chunk_size=300: Each chunk is ~300 characters
-# overlap=75: Each chunk overlaps by 75 characters with adjacent chunks
-vector_db = VectorDB(chunk_size=300, overlap=75)
-
 # Load documents from scraped JSON data
 DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "scraped_medical_data.json")
 
+_vector_db = None
+_vector_db_lock = threading.Lock()
 _data_loaded = False
+_loading_lock = threading.Lock()
+_load_error = None
+_background_thread = None
 
-def load_data():
-    """Load and initialize data on first use (deferred startup)"""
-    global _data_loaded
+
+def get_vector_db() -> VectorDB:
+    """Create the vector DB lazily so import time stays lightweight."""
+    global _vector_db
+
+    if _vector_db is None:
+        with _vector_db_lock:
+            if _vector_db is None:
+                print("ℹ️ Creating vector database shell (lazy initialization)...")
+                _vector_db = VectorDB(chunk_size=300, overlap=75)
+
+    return _vector_db
+
+
+def _load_data_impl() -> bool:
+    """Perform the expensive document load and embedding generation."""
+    global _data_loaded, _load_error
+
     if _data_loaded:
-        return
-    
+        return True
+
     try:
-        print("🚀 Initializing Rabbit AI with scraped healthcare knowledge...")
+        print("🚀 Initializing Rabbit AI knowledge base in background-safe mode...")
+
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             scraped_data = json.load(f)
-            
+
         documents = [item["content"] for item in scraped_data]
         doc_names = [item["title"] for item in scraped_data]
-        
+
         if documents:
-            vector_db.add_documents(documents, doc_names)
+            db = get_vector_db()
+            db.add_documents(documents, doc_names)
             print(f"✅ Loaded {len(documents)} documents into knowledge base")
         else:
             print("⚠️ No documents found in scraped data. Please run scraper.py first.")
-    except FileNotFoundError:
-        print(f"⚠️ Data file not found at {DATA_FILE}. Please run backend/scraper.py first to build the knowledge base.")
-    except Exception as e:
-        print(f"⚠️ Error loading data: {str(e)}")
-    finally:
-        _data_loaded = True
 
-# Trigger data load on module import (but with error handling)
-try:
-    load_data()
-except Exception as e:
-    print(f"⚠️ Non-critical startup error: {str(e)}")
+        _load_error = None
+        _data_loaded = True
+        return True
+    except FileNotFoundError:
+        _load_error = f"Data file not found at {DATA_FILE}"
+        print(f"⚠️ {_load_error}. Please run backend/scraper.py first to build the knowledge base.")
+    except Exception as e:
+        _load_error = str(e)
+        print(f"⚠️ Error loading data: {_load_error}")
+
+    return False
+
+
+def load_data(background: bool = False):
+    """Load the knowledge base either synchronously or in a background thread."""
+    global _background_thread
+
+    if _data_loaded:
+        return True
+
+    if background:
+        with _loading_lock:
+            if _data_loaded:
+                return True
+
+            if _background_thread and _background_thread.is_alive():
+                return True
+
+            def _runner():
+                with _loading_lock:
+                    _load_data_impl()
+
+            _background_thread = threading.Thread(
+                target=_runner,
+                name="rabbit-ai-kb-loader",
+                daemon=True,
+            )
+            _background_thread.start()
+            return True
+
+    with _loading_lock:
+        if _data_loaded:
+            return True
+
+        return _load_data_impl()
+
+
+def ensure_data_loaded() -> bool:
+    """Public helper for request handlers that need the knowledge base ready."""
+    return load_data(background=False)
+
+
+def start_background_loading() -> None:
+    """Kick off best-effort loading without blocking app startup."""
+    load_data(background=True)
+
 
 def generate_hypothetical_document(query: str, client: Groq) -> str:
     """
@@ -82,7 +147,7 @@ Keep the explanation between 100 and 150 words."""
                 {"role": "system", "content": hyde_prompt},
                 {"role": "user", "content": f"User Question:\n{query}"}
             ],
-            temperature=0.3, # Lower temperature for more consistent, factual-sounding articles
+            temperature=0.3,
             max_tokens=300
         )
         return completion.choices[0].message.content
@@ -94,7 +159,7 @@ Keep the explanation between 100 and 150 words."""
 def generate_answer(query: str) -> str:
     """
     Generate healthcare answers using RAG + Groq (LLaMA3) with HyDE
-    
+
     Process:
     1. Generate Hypothetical Document (HyDE)
     2. Retrieve relevant chunks from vector database using FAISS (Query + HyDE)
@@ -102,21 +167,20 @@ def generate_answer(query: str) -> str:
     4. Send to Groq API with robust safety system prompt
     5. Return generated strictly-filtered response
     """
-    
-    # Initialize Groq client
+
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return "⚠️ GROQ_API_KEY environment variable not set. Please set it with your Groq API key."
-    
+
+    ensure_data_loaded()
+
     client = Groq(api_key=api_key)
-    
-    # Step 1: Generate Hypothetical Document to expand search vector
+
     hypothetical_doc = generate_hypothetical_document(query, client)
     search_query = f"{query}\n\n{hypothetical_doc}" if hypothetical_doc else query
-    
-    # Step 2: Retrieve relevant context from vector database
-    context = vector_db.search(search_query, k=3)  # Get top 3 most relevant chunks
-    
+
+    context = get_vector_db().search(search_query, k=3)
+
     system_prompt = """SYSTEM ROLE: SECURE HEALTHCARE INFORMATION ASSISTANT
 
 You are a strictly controlled healthcare information assistant operating inside a Retrieval-Augmented Generation (RAG) system.
@@ -240,7 +304,6 @@ User Question:
 If the user is asking to find a hospital (either generally or a specific hospital by name), you MUST prioritize using the `hospital_finder` tool. Otherwise, provide a helpful, safe response based ONLY on the context above. Always emphasize consulting healthcare professionals."""
 
     try:
-        # Define the available tools for the LLM
         tools = [
             {
                 "type": "function",
@@ -264,14 +327,12 @@ If the user is asking to find a hospital (either generally or a specific hospita
                 },
             }
         ]
-        
-        # Initial messages setup
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ]
 
-        # Step 4: Send to Groq API (lightning fast inference)
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
@@ -281,34 +342,26 @@ If the user is asking to find a hospital (either generally or a specific hospita
             max_tokens=1024,
             top_p=0.9
         )
-        
+
         original_message = completion.choices[0].message
-        
-        # Step 5: Check if the model wants to call a tool
+
         if hasattr(original_message, 'tool_calls') and original_message.tool_calls:
-            # Append the assistant's initial response indicating tool use
             messages.append(original_message)
-            
-            # Execute tool calls
+
             for tool_call in original_message.tool_calls:
                 function_name = tool_call.function.name
-                
+
                 if function_name == "hospital_finder":
                     args = json.loads(tool_call.function.arguments)
                     location = args.get("location")
                     hospital_name = args.get("hospital_name")
                     print(f"🔧 LLM routing to tool: {function_name} for location '{location}', hospital '{hospital_name}'")
-                    # Fetch from external API
                     function_response = find_hospitals(location, hospital_name)
-                    
-                    # Skip the second LLM call, as the strict medical safety constraints keep truncating the response
-                    # The `find_hospitals` function already formats the text perfectly.
                     return f"{function_response}\n\n[📍 Context: Generated using Live OpenStreetMap API | ⚡ Powered by Groq Tool Routing]"
 
-        # If no tool was called, return standard RAG answer
         answer = original_message.content
         return f"{answer}\n\n[📚 Context sources: Retrieved from vector database with FAISS semantic search | ⚡ Powered by Groq]"
-        
+
     except Exception as e:
         error_msg = str(e)
         if "authentication" in error_msg.lower() or "api_key" in error_msg.lower():

@@ -2,7 +2,7 @@ import os
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from backend.rag import generate_answer, vector_db, load_data
+from backend.rag import generate_answer, get_vector_db, start_background_loading
 from backend.risk_analyzer import analyze_risk
 from backend.report_analyzer import analyze_report
 
@@ -38,11 +38,12 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup_event():
-    """Ensure data is loaded when app starts"""
+    """Schedule knowledge-base warmup without blocking uvicorn startup."""
     try:
-        load_data()
+        start_background_loading()
+        print("ℹ️ Knowledge base warmup scheduled in background.")
     except Exception as e:
-        print(f"⚠️ Data loading error during startup (non-critical): {str(e)}")
+        print(f"⚠️ Startup warmup scheduling error (non-critical): {str(e)}")
 
 @app.get("/")
 def root():
@@ -68,7 +69,7 @@ def health():
 @app.get("/stats")
 def stats():
     """Get vector database statistics including chunking info"""
-    db_stats = vector_db.get_stats()
+    db_stats = get_vector_db().get_stats()
     return {
         "vectordb": db_stats,
         "chunking": {
